@@ -6,7 +6,7 @@ from isaaclab.app import AppLauncher
 #from isaaclab.robots.unitree import G1_CFG  # Import G1 config
 
 # create argparser
-parser = argparse.ArgumentParser(description="Tutorial on spawning prims into the scene.")
+parser = argparse.ArgumentParser(description="MR-NAMO Scene 1 (IN PROGRESS)")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -14,8 +14,6 @@ args_cli = parser.parse_args()
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
-
-import isaacsim.core.utils.prims as prim_utils
 
 from environment import design_scene
 
