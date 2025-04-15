@@ -1,6 +1,10 @@
 
 import argparse
 from isaaclab.app import AppLauncher
+import sys
+sys.path.append(r"C:\IsaacLab\IsaacLab_git\apps\mr_namo\namosim")
+
+
 
 #from isaaclab.robots.unitree import G1_CFG  # Import G1 config
 

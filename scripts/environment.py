@@ -2,13 +2,14 @@ import isaacsim.core.utils.prims as prim_utils
 import isaaclab.sim as sim_utils
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 import numpy as np
+import sys
+sys.path.append(r"C:\IsaacLab\IsaacLab_git\apps\mr_namo\namosim")
 from namosim.mapgen.mapgen import MapGen
 
 
 def GRID_TO_WORLD(x, y, cell_size):
     return x * cell_size, y * cell_size
 
-from pxr import Gf
 
 def create_mr_namo_map(map_grid, cell_size=0.5):
     for r in range(map_grid.shape[0]):
@@ -23,13 +24,6 @@ def create_mr_namo_map(map_grid, cell_size=0.5):
                     scale=(cell_size, cell_size, cell_size),
                     translation=(world_x, world_y, cell_size / 2)
                 )
-
-                if map_grid[r, c] == 2:
-                    #PERM_WALL = red
-                    prim_utils.set_prim_color(prim_path, Gf.Vec3f(1.0, 0.2, 0.2))
-                else:
-                    #WALL = gray
-                    prim_utils.set_prim_color(prim_path, Gf.Vec3f(0.6, 0.6, 0.6))
 
 
 def design_scene():
