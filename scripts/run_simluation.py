@@ -1,5 +1,4 @@
 
-
 import argparse
 from isaaclab.app import AppLauncher
 

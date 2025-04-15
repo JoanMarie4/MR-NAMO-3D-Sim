@@ -6,6 +6,23 @@ from xml.dom import minidom
 import numpy as np
 import numpy.typing as npt
 
+'''
+Taken mapgen.py from namosim excluding Polygon
+'''
+import os
+import sys
+
+# Print the current working directory to check where the script is being run
+print("Current working directory:", os.getcwd())
+
+# Get the absolute path to the target directory
+target_path = os.path.abspath(os.path.join(os.getcwd(), '../../namosim'))
+
+# Print the absolute path to check if it's correct
+print(f"Adding path: {target_path}")
+
+# Append the path to sys.path
+sys.path.append(target_path)
 
 from namosim.mapgen import utils
 from namosim.mapgen.types import FLOOR, PERM_WALL, WALL, GridCell

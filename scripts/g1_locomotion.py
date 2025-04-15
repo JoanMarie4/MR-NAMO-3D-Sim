@@ -40,7 +40,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 
 from isaaclab_tasks.manager_based.locomotion.velocity.config.g1.rough_env_cfg import G1RoughEnvCfg_PLAY
 
-TASK = "Isaac-Velocity-Test-Rough-G1-v0"
+TASK = "Isaac-Velocity-Rough-G1-v0"
 RL_LIBRARY = "rsl_rl"
 
 class G1RoughDemo:
@@ -132,7 +132,7 @@ class G1RoughDemo:
                 self.commands[self._selected_id] = self._key_to_control["ZEROS"]
 
     def update_selected_object(self):
-        """Determines which robot is currently selected and whether it is a valid H1 robot.
+        """Determines which robot is currently selected and whether it is a valid G1 robot.
         For valid robots, we enter the third-person view for that robot.
         When a new robot is selected, we reset the command of the previously selected
         to continue random commands."""
@@ -153,7 +153,13 @@ class G1RoughDemo:
                     self.viewport.set_active_camera(self.camera_path)
                 self._update_camera()
             else:
-                print("The selected prim was not a H1 robot")
+                print("The selected prim was not a G1 robot")
+
+        # Reset commands for previously selected robot if a new one is selected
+        if self._previous_selected_id is not None and self._previous_selected_id != self._selected_id:
+            self.env.unwrapped.command_manager.reset([self._previous_selected_id])
+            self.commands[:, 0:3] = self.env.unwrapped.command_manager.get_command("base_velocity")
+
 
     
     def _update_camera(self):
@@ -171,21 +177,21 @@ class G1RoughDemo:
         camera_state.set_position_world(eye, True)
         camera_state.set_target_world(target, True)
 
-    def main():
-        """Main function."""
-        demo_h1 = H1RoughDemo()
-        obs, _ = demo_h1.env.reset()
-        while simulation_app.is_running():
-            # check for selected robots
-            demo_h1.update_selected_object()
-            with torch.inference_mode():
-                action = demo_h1.policy(obs)
-                obs, _, _, _ = demo_h1.env.step(action)
-                # overwrite command based on keyboard input
-                obs[:, 9:13] = demo_h1.commands
+def main():
+    """Main function."""
+    demo_g1 = G1RoughDemo()
+    obs, _ = demo_g1.env.reset()
+    while simulation_app.is_running():
+        # check for selected robots
+        demo_g1.update_selected_object()
+        with torch.inference_mode():
+            action = demo_g1.policy(obs)
+            obs, _, _, _ = demo_g1.env.step(action)
+            # overwrite command based on keyboard input
+            obs[:, 9:13] = demo_g1.commands
 
 
-        if __name__ == "__main__":
-            main()
-            simulation_app.close()
+if __name__ == "__main__":
+    main()
+    simulation_app.close()
 
