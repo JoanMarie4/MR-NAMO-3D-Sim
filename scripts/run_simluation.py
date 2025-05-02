@@ -1,11 +1,11 @@
 
 import argparse
 from isaaclab.app import AppLauncher
-import sys
-sys.path.append(r"C:\IsaacLab\IsaacLab_git\apps\mr_namo\namosim")
+import os
 
-
-
+# Set environment variables to disable GUI and RViz
+os.environ["NAMO_NO_DISPLAY_WINDOW"] = "TRUE"
+os.environ["NAMO_DEACTIVATE_RVIZ"] = "TRUE"
 #from isaaclab.robots.unitree import G1_CFG  # Import G1 config
 
 # create argparser
@@ -18,7 +18,7 @@ args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-from environment import design_scene
+from environment import setup_world, create_mr_namo_environment
 
 import isaaclab.sim as sim_utils
 
@@ -32,7 +32,8 @@ def main():
     sim.set_camera_view([2.0, 0.0, 2.5], [-0.5, 0.0, 0.5])
 
     # Design scene by adding assets to it
-    design_scene()
+    setup_world()
+    create_mr_namo_environment()
 
     # Play the simulator
     sim.reset()
