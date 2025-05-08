@@ -27,7 +27,7 @@ import carb
 import omni
 from omni.kit.viewport.utility import get_viewport_from_window_name
 from omni.kit.viewport.utility.camera_state import ViewportCameraState
-from pxr import Gf, Sdf
+from pxr import Gf
 from rsl_rl.runners import OnPolicyRunner
 import namosim.navigation.action_result as ar
 from isaaclab.envs import ManagerBasedRLEnv
@@ -35,10 +35,16 @@ from isaaclab.utils.math import quat_apply
 from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 scenarios_folder = os.path.join(os.path.dirname(__file__), "../scenarios")
-from omni.physx.scripts import utils as physx_utils
-from pxr import UsdGeom, UsdPhysics, PhysxSchema, Gf
+from pxr import UsdGeom, Gf
 from flat_env_namo_cfg import G1FlatMultiRobotEnvCfg
-
+from namosim.world.entity import Entity, Movability, Style
+import math
+import numpy as np
+from namosim.world.obstacle import Obstacle
+import isaacsim.core.utils.prims as prim_utils
+import isaacsim.core.prims as prim
+from isaaclab.sim import UsdFileCfg, PreviewSurfaceCfg
+import isaaclab.sim as sim_utils
 
 TASK = "Isaac-Velocity-Flat-G1-v0"
 RL_LIBRARY = "rsl_rl"
@@ -53,7 +59,7 @@ class G1RoughDemo:
         checkpoint = get_published_pretrained_checkpoint(RL_LIBRARY, TASK)
         # create envionrment
         simulation_file_path=os.path.join(
-            scenarios_folder, "evasion.svg"
+            scenarios_folder, "1_robot_around_obstacle.svg"
         )
         self.sim = create_sim_from_file(simulation_file_path)
         self.world = self.sim.ref_world
@@ -67,7 +73,10 @@ class G1RoughDemo:
         env_cfg.curriculum = None 
         env_cfg.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
         env_cfg.commands.base_velocity.ranges.heading = (-1.0, 1.0)
-
+        self.scale= 1.1
+        self.step_idx = 0
+        self.history = {}
+        self.dynamic_entities = self.world.dynamic_entities
         # wrap around environment for rsl-rl
         self.env = RslRlVecEnvWrapper(ManagerBasedRLEnv(cfg=env_cfg))
         self.device = self.env.unwrapped.device
@@ -100,18 +109,10 @@ class G1RoughDemo:
 
         self.create_boundary_walls(stage, binary_grid)
 
-        #mergnig cubes into one mesh\
-        omni.kit.commands.execute(
-            "MergeMeshPrims",
-            sourcePrimPaths=["/World/Walls"],
-            destPrimPath="/World/MergedWalls",
-            createNewLayer=False
-        )
-
     def create_boundary_walls(self, stage, binary_grid):
         """Creates 4 surrounding boundary walls around the map."""
         cell_size = binary_grid.cell_size
-        scale = 1.5
+        scale = 1.1
         width = binary_grid.d_width * cell_size * scale
         height = binary_grid.d_height * cell_size * scale
         wall_thickness = cell_size * scale
@@ -142,7 +143,7 @@ class G1RoughDemo:
 
     def create_box_at_cell(self, stage, prim_path, x, y, binary_grid):
         """Creates a scaled cube obstacle in the world at the given grid cell."""
-        scale = 1.5
+        scale = 1.1
         world_x = (x * binary_grid.cell_size + binary_grid.cell_size / 2 + binary_grid.grid_pose[0]) * scale
         world_y = (y * binary_grid.cell_size + binary_grid.cell_size / 2 + binary_grid.grid_pose[1]) * scale
         wall_height = binary_grid.cell_size * 20  # Taller than 1 cell
@@ -158,13 +159,8 @@ class G1RoughDemo:
 
     def compute_spawn_poses(self, agents, binary_grid):
         spawn_poses = []
-        scale = 1.5
+        scale = 1.1
         for agent in agents.values():
-            # Convert grid cell indices to meters
-            print(f"Raw pose: {agent.pose}")
-            print(f"Grid pose origin: {binary_grid.grid_pose}")
-            print(f"Cell size: {binary_grid.cell_size}")
-            print(f"Agent Cell size: {agent.cell_size}")
             x = agent.pose[0] / binary_grid.cell_size
             y = agent.pose[1] / binary_grid.cell_size
             world_x = (x * binary_grid.cell_size + binary_grid.cell_size / 2 + binary_grid.grid_pose[0]) * scale
@@ -172,21 +168,6 @@ class G1RoughDemo:
             yaw_rad = agent.pose[2]
             spawn_poses.append((world_x, world_y, yaw_rad))
         return spawn_poses
-
-    '''
-    def set_agent_spawns(self, spawn_poses):
-        """Sets the spawn poses of all robots using the world pose."""
-        for env_index, (x, y, yaw) in enumerate(spawn_poses):
-            quat = euler_angles_to_quat([0.0, 0.0, yaw])
-
-            # Get the robot in this env
-            robot = self.env.unwrapped.scene[f"robot_{env_index}"]
-            # Set the world pose of this robot
-            robot.set_world_pose(
-                position=[x, y, 0.0],  # Assuming robot starts on flat ground
-                orientation=quat,
-            )
-    '''
 
     def set_agent_spawns(self, spawn_positions):
 
@@ -198,29 +179,71 @@ class G1RoughDemo:
                 f"Number of spawn positions ({len(spawn_positions)}) does not match number of environments ({self.env.num_envs})."
             )
 
-        #update the root state position for each robot in each environment
         for env_index, pos in enumerate(spawn_positions):
-            # Keep orientation unchanged, just update position
             pos_tensor = torch.tensor(pos, dtype=torch.float, device=device)
             robot.data.root_pos_w[env_index] = pos_tensor
 
-        #apply the updated states to simulation
         robot.write_root_state_to_sim(robot.data.root_state_w)
+
+    def convert_movable_obstacles(self):
+        for entity_id, entity in self.dynamic_entities.items():
+            if isinstance(entity, Obstacle):
+                # 1. Mark it unmovable
+                entity.movability = Movability.UNMOVABLE
+                print(f"Marked entity {entity_id} as UNMOVABLE.")
+
+                # 2. Create a replacement object in the same place
+                pose = entity.pose
+                polygon = entity.polygon
+                style = entity.style  # optional
+
+                replacement_box = Obstacle(
+                    type_="static",  # or whatever type your map object requires
+                    uid=f"{entity_id}_replacement",
+                    polygon=polygon,
+                    pose=pose,
+                    style=style,
+                    movability=Movability.STATIC,
+                    full_geometry_acquired=True,
+                )
+
+                # Add it to the world or map (depends on your setup)
+                self.add_obstacle(replacement_box.pose)
+                print(f"Placed replacement obstacle at {pose}.")        
         
+    def add_obstacle(self, pose):
+        scale = 1.1
+        x = pose[0] / self.binary_grid.cell_size
+        y = pose[1] / self.binary_grid.cell_size
+        world_x = (x * self.binary_grid.cell_size + self.binary_grid.cell_size / 2 + self.binary_grid.grid_pose[0]) * scale
+        world_y = (y * self.binary_grid.cell_size + self.binary_grid.cell_size / 2 + self.binary_grid.grid_pose[1]) * scale
+        yaw_rad = pose[2]
+        table_prim_path = f"/World/Obstacles/thor_table_{int(world_x*100)}_{int(world_y*100)}"
+
+        cfg_cuboid = sim_utils.MeshCuboidCfg(
+            size=(1, 1, 1),  # X, Y, Z dimensions in meters
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+        )
+
+        cfg_cuboid.func(
+            prim_path="/World/Objects/ObstacleCube", 
+            cfg=cfg_cuboid, 
+            translation=(world_x, world_y, 0.25),  # 0.25 puts the cube's base on the floor
+        )
+
     def create_camera(self):
-        """Creates a camera to be used for third-person view."""
+        """Creates a camera to be used for third-person overhead view."""
         stage = omni.usd.get_context().get_stage()
         self.viewport = get_viewport_from_window_name("Viewport")
+
         # Create camera
         self.camera_path = "/World/Camera"
-        self.perspective_path = "/OmniverseKit_Persp"
+        self.perspective_path = "/World/Camera"  # Make the camera itself the active one
         camera_prim = stage.DefinePrim(self.camera_path, "Camera")
-        camera_prim.GetAttribute("focalLength").Set(8.5)
-        coi_prop = camera_prim.GetProperty("omni:kit:centerOfInterest")
-        if not coi_prop or not coi_prop.IsValid():
-            camera_prim.CreateAttribute(
-                "omni:kit:centerOfInterest", Sdf.ValueTypeNames.Vector3d, True, Sdf.VariabilityUniform
-            ).Set(Gf.Vec3d(0, 0, -10))
+
+        camera_prim.GetAttribute("focalLength").Set(18.14756)
+        UsdGeom.Xformable(camera_prim).AddTranslateOp().Set(Gf.Vec3d(3.57347, 1.87287, 14.19696))
+        UsdGeom.Xformable(camera_prim).AddRotateXYZOp().Set(Gf.Vec3f(9.43699, 0.0, -0.63826))
         self.viewport.set_active_camera(self.perspective_path)
 
     def set_up_keyboard(self):
@@ -255,10 +278,129 @@ class G1RoughDemo:
                         self.viewport.set_active_camera(self.perspective_path)
                     else:
                         self.viewport.set_active_camera(self.camera_path)
+            elif event.input.name == "G":
+                self.set_agent_spawns(self.spawn_pos)
+            elif event.input.name == "S":
+                step = self.history[self.step_idx]
+                action_results = step.action_results
+                for agent_id, action_result in action_results.items():
+                    env_index = self.agent_to_env.get(agent_id)
+
+                    if env_index is None:
+                        raise KeyError(f"Unknown agent_id '{agent_id}' in results")
+                    
+                    if isinstance(action_result, ar.ActionSuccess):
+                        new_pose = action_result.robot_pose
+                        cur_pose = self.agents[agent_id].pose
+                        self.move_robot_for_duration(cur_pose, new_pose, agent_id, duration_steps=60)
+                        # now you can use robot_pose + env_index however you like
+                        print(f"[env {env_index}] {agent_id} pose = {new_pose}")
+                    else:
+                        # it's some other ActionResult (e.g. a failure or no-op), skip or handle differently
+                        print(f"[env {env_index}] {agent_id} did not succeed, skipping pose extraction")
+                self.step_idx += 1
+
         # On key release, the robot stops moving
         elif event.type == carb.input.KeyboardEventType.KEY_RELEASE:
             if self._selected_id:
                 self.commands[self._selected_id] = self._key_to_control["ZEROS"]
+
+
+    def move_robot_for_duration(self, cur_pose, new_pose, agent_id, duration_steps=60):
+        env_idx = self.agent_to_env[agent_id]
+        # Initialize tracking dictionary if needed
+        if not hasattr(self, "agent_move_counters"):
+            self.agent_move_counters = {aid: 0 for aid in self.agent_to_env}
+        if agent_id not in self.agent_move_counters:
+            self.agent_move_counters[agent_id] = 0
+
+        # Convert current and target grid coordinates to Isaac world coordinates
+        cur_x, cur_y, cur_yaw = cur_pose
+        new_x, new_y, new_yaw = new_pose
+        print(f"robot{env_idx} current pose: x:{cur_x} y:{cur_y} yaw:{cur_yaw}")
+        print(f"robot{env_idx} new pose: x:{new_x } y:{new_y} yaw:{new_yaw}")
+
+        cur_x_isaac = ((cur_x / self.binary_grid.cell_size) * self.binary_grid.cell_size + self.binary_grid.grid_pose[0]) * self.scale
+        cur_y_isaac = ((cur_y / self.binary_grid.cell_size) * self.binary_grid.cell_size + self.binary_grid.grid_pose[1]) * self.scale
+        new_x_isaac = ((new_x / self.binary_grid.cell_size) * self.binary_grid.cell_size + self.binary_grid.grid_pose[0]) * self.scale
+        new_y_isaac = ((new_y / self.binary_grid.cell_size) * self.binary_grid.cell_size + self.binary_grid.grid_pose[1]) * self.scale
+        print(f"robot{env_idx} Isaac current pose: x:{cur_x_isaac} y:{cur_y_isaac}")
+        print(f"robot{env_idx} Isaac new pose: x:{new_x_isaac} y:{new_y_isaac}")
+
+        # Compute velocity componentss
+        dx = new_x_isaac - cur_x_isaac
+        dy = new_y_isaac - cur_y_isaac
+        distance = math.hypot(dx, dy)
+        desired_yaw = math.atan2(dy, dx)
+        dyaw = (desired_yaw - cur_yaw + math.pi) % (2 * math.pi) - math.pi
+
+        # Proportional control
+        k_linear = 1.0
+        k_angular = 1.0
+        linear_velocity = k_linear * distance
+        angular_velocity = k_angular * dyaw
+        print(f"linear_velocity: {linear_velocity}")
+        print(f"angular_velocity: {angular_velocity}")
+
+        # Clamp max velocities
+        max_lin = 1.0
+        max_ang = 0.75
+        linear_velocity = max(-max_lin, min(linear_velocity, max_lin))
+        linear_velocity = max(-max_lin, min(linear_velocity, max_lin))
+        linear_velocity=1 
+        angular_velocity = max(-max_ang, min(angular_velocity, max_ang))
+        print(f"linear_velocity: {linear_velocity}")
+        print(f"angular_velocity: {angular_velocity}")
+
+        if self.agent_move_counters[agent_id] < duration_steps / 2:
+            # Send velocity command
+            self.commands[env_idx] = torch.tensor(
+                [linear_velocity, 0.0, 0.0, angular_velocity],
+                device=self.device
+            )
+            self.agent_move_counters[agent_id] += 1
+        elif self.agent_move_counters[agent_id] < duration_steps:
+            # Send velocity command
+            self.commands[env_idx] = torch.tensor(
+                [linear_velocity, 0.0, 0.0, 0],
+                device=self.device
+            )
+            self.agent_move_counters[agent_id] += 1
+        else:
+            # Stop robot and reset counter
+            self.commands[env_idx] = torch.tensor(
+                [0.0, 0.0, 0.0, 0.0],
+                device=self.device
+            )
+            self.agent_move_counters[agent_id] = 0
+
+        isaac_pose = self.get_robot_pose_in_isaac(env_idx)
+        print(f"robot{env_idx} updated cur pose: {isaac_pose}")
+
+        self.agents[agent_id].pose = new_pose
+
+    def get_robot_pose_in_isaac(self, env_idx):
+        robot_prim_path = f"/World/envs/env_{env_idx}"
+
+        stage = omni.usd.get_context().get_stage()
+
+        robot_prim = stage.GetPrimAtPath(robot_prim_path)
+        if not robot_prim:
+            raise ValueError(f"Robot prim not found at path: {robot_prim_path}")
+
+        xform = UsdGeom.Xform(robot_prim)
+        transform_matrix = xform.GetLocalTransformation()
+
+        # Extract translation from the matrix
+        translation = transform_matrix.ExtractTranslation()
+        x, y, z = translation[0], translation[1], translation[2]
+
+        # Extract rotation matrix and compute yaw
+        rotation_matrix = transform_matrix.ExtractRotation()
+        forward = rotation_matrix.TransformDir(Gf.Vec3d(1, 0, 0))
+        yaw = np.arctan2(forward[1], forward[0])
+
+        return x, y, yaw
 
     def update_selected_object(self):
         """Determines which robot is currently selected and whether it is a valid G1 robot.
@@ -310,38 +452,19 @@ def main():
     """Main function."""
     demo_g1 = G1RoughDemo()
     obs, _ = demo_g1.env.reset()
-    # Delay the manual position update by one frame to allow Isaac Sim to stabilize
     demo_g1.set_agent_spawns(demo_g1.spawn_pos)
-    history = demo_g1.sim.run()
-    while simulation_app.is_running():
-        for step in history:
-            action_results = step.action_results
-            for agent_id, action_result in action_results.items():
-                env_index = demo_g1.agent_to_env.get(agent_id)
+    demo_g1.convert_movable_obstacles()
+    demo_g1.history = demo_g1.sim.run()
 
-                if env_index is None:
-                    raise KeyError(f"Unknown agent_id '{agent_id}' in results")
-                
-                if isinstance(action_result, ar.ActionSuccess):
-                    robot_pose = action_result.robot_pose
-                    # now you can use robot_pose + env_index however you like
-                    print(f"[env {env_index}] {agent_id} pose = {robot_pose}")
-                else:
-                    # it's some other ActionResult (e.g. a failure or no-op), skip or handle differently
-                    print(f"[env {env_index}] {agent_id} did not succeed, skipping pose extraction")
+    while simulation_app.is_running():  
+
         # check for selected robots
-        demo_g1.update_selected_object()
+        #demo_g1.update_selected_object()
         with torch.inference_mode():
             action = demo_g1.policy(obs)
             obs, _, _, _ = demo_g1.env.step(action)
             # overwrite command based on keyboard input
-            #obs[:, 9:13] = demo_g1.commands
-            if demo_g1._selected_id is not None:
-                obs[demo_g1._selected_id, 9:13] = demo_g1.commands[demo_g1._selected_id]
-                obs[torch.arange(obs.shape[0]) != demo_g1._selected_id, 9:13] = 0.0
-            else:
-                obs[:, 9:13] = 0.0
-
+            obs[:, 9:13] = demo_g1.commands
 
 
 if __name__ == "__main__":
